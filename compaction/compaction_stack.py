@@ -136,71 +136,99 @@ class CompactionStack(Stack):
         target_s3_bucket.grant_write(sfCompactFunction)
 
         STATE_MACHINE_TEMPLATE = {
-            "StartAt": "GetListofPrefixes",
-            "States": {
-                "GetListofPrefixes": {
-                "Type": "Task",
-                "Resource": "arn:aws:states:::lambda:invoke",
-                "Parameters": {
-                    "Payload.$": "$",
-                    "FunctionName": "${LIST_LAMBDA}:$LATEST"
-                },
-                "Retry": [
-                    {
-                    "ErrorEquals": [
-                        "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException",
-                        "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException"
-                    ],
-                    "IntervalSeconds": 1,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 2
-                    }
+        "StartAt": "GetListofPrefixes",
+        "States": {
+            "GetListofPrefixes": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "Payload.$": "$",
+                "FunctionName": "${LIST_LAMBDA}:$LATEST"
+            },
+            "Retry": [
+                {
+                "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
                 ],
-                "Next": "ForEachS3Prefix",
-                "OutputPath": "$.Payload"
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+                }
+            ],
+            "Next": "MapPrefixes",
+            "OutputPath": "$.Payload.s3_locations"
+            },
+            "MapPrefixes": {
+            "Type": "Map",
+            "ItemProcessor": {
+                "ProcessorConfig": {
+                "Mode": "INLINE"
                 },
-                "ForEachS3Prefix": {
-                "Type": "Map",
-                "ItemProcessor": {
+                "StartAt": "MapObjectKeys",
+                "States": {
+                "MapObjectKeys": {
+                    "Type": "Map",
+                    "ItemProcessor": {
                     "ProcessorConfig": {
-                    "Mode": "DISTRIBUTED",
-                    "ExecutionType": "EXPRESS"
+                        "Mode": "DISTRIBUTED",
+                        "ExecutionType": "EXPRESS"
                     },
-                    "StartAt": "CompactFilesInPrefix",
+                    "StartAt": "ObjectCompaction",
                     "States": {
-                    "CompactFilesInPrefix": {
+                        "ObjectCompaction": {
                         "Type": "Task",
                         "Resource": "arn:aws:states:::lambda:invoke",
                         "OutputPath": "$.Payload",
                         "Parameters": {
-                        "Payload.$": "$",
-                        "FunctionName": "${COMPACT_LAMBDA}:$LATEST"
+                            "Payload.$": "$",
+                            "FunctionName": "${COMPACT_LAMBDA}:$LATEST"
                         },
                         "Retry": [
-                        {
+                            {
                             "ErrorEquals": [
-                            "Lambda.ServiceException",
-                            "Lambda.AWSLambdaException",
-                            "Lambda.SdkClientException",
-                            "Lambda.TooManyRequestsException"
+                                "Lambda.ServiceException",
+                                "Lambda.AWSLambdaException",
+                                "Lambda.SdkClientException",
+                                "Lambda.TooManyRequestsException"
                             ],
                             "IntervalSeconds": 1,
                             "MaxAttempts": 3,
                             "BackoffRate": 2
-                        }
+                            }
                         ],
                         "End": True
+                        }
+                    }
+                    },
+                    "End": True,
+                    "Label": "MapObjectKeys",
+                    "MaxConcurrency": 10,
+                    "ItemReader": {
+                    "Resource": "arn:aws:states:::s3:listObjectsV2",
+                    "Parameters": {
+                        "Bucket.$": "$.src_bucket",
+                        "Prefix.$": "$.src_prefix"
+                    },
+                    "ReaderConfig": {}
+                    },
+                    "ItemBatcher": {
+                    "MaxItemsPerBatch": 100000,
+                    "MaxInputBytesPerBatch": 261120,
+                    "BatchInput": {
+                        "src.$": "$.src",
+                        "dest.$": "$.dest",
+                        "execution_input.$": "$$.Execution.Input"
                     }
                     }
-                },
-                "MaxConcurrency": 100,
-                "Label": "ForEachS3Prefix",
-                "End": True,
-                "ItemsPath": "$.s3_locations"
                 }
+                }
+            },
+            "End": True
             }
+        }
         }
 
         stateMachineLogGroup = logs.LogGroup(self, "CompactionStateMachineLogGroup")
@@ -250,6 +278,16 @@ class CompactionStack(Stack):
                     ],
                     resources = [
                         compactionStateMachine.state_machine_arn + ":*"
+                    ]
+                ),
+                iam.PolicyStatement(
+                    effect = iam.Effect.ALLOW,
+                    actions=[
+                        "s3:ListBucket"
+                    ],
+                    resources=[
+                        source_s3_bucket.bucket_arn,
+                        source_s3_bucket.bucket_arn + "/*",
                     ]
                 )
             ]

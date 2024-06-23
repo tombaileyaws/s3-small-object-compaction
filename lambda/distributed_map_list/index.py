@@ -18,9 +18,12 @@ def lambda_handler(event, context):
     s3_locations = []
     for date in dates:
         print(f"Selected {date} of {len(dates)}")
+        s3_path_split=event["s3_source_uri"].split('/')
         location = {
              "src": json.dumps(event["s3_source_uri"] + str(date)),
-             "dest": json.dumps(event["s3_destination_uri"] + str(date))
+             "dest": json.dumps(event["s3_destination_uri"] + str(date)),
+             "src_bucket": s3_path_split[2],
+             "src_prefix": '/'.join(s3_path_split[3:])+ str(date)
              }
         s3_locations.append(location)
     print("Prefix list complete!")
